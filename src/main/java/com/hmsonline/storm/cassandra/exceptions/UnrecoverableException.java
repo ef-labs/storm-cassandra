@@ -15,25 +15,32 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+//
+// Copyright (c) 2013 Health Market Science, Inc.
+//
 package com.hmsonline.storm.cassandra.exceptions;
 
-import org.apache.storm.task.IErrorReporter;
-import org.slf4j.Logger;
+/**
+ * Exception indicating that a <code>UpsertMapper</code>
+ * implementation has failed to map a storm <code>Tuple</code>
+ * properly, and that repeated mapping attempts would
+ * never succeed for a given tuple.
+ * 
+ * <code>UpsertMapper</code> implementations should throw
+ * this error when some sort of data format error has
+ * occurred, indicating that storm should NOT replay
+ * the tuple.
+ * 
+ * 
+ * @author tgoetz
+ *
+ */
+public class UnrecoverableException extends RuntimeException {
 
-import java.io.Serializable;
+    private static final long serialVersionUID = 5748318667106957380L;
 
-public interface ExceptionHandler extends Serializable {
-
-    /**
-     * Called when an exception is encountered.
-     *
-     * Note that the <code>errorReporter</code> parameter may be null if
-     * an exception occurs outside of a context where a TridentCollector
-     * is available.
-     *
-     * @param ex The error
-     * @param errorReporter The error reporter
-     * @param logger The logger to use
-     */
-    void onException(Exception ex, IErrorReporter errorReporter, Logger logger);
+    public UnrecoverableException(String message, Exception e) {
+        super(message, e);
+    }
 }

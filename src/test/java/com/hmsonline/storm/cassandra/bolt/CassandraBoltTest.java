@@ -17,138 +17,149 @@
  */
 package com.hmsonline.storm.cassandra.bolt;
 
-import static com.hmsonline.storm.cassandra.bolt.AstyanaxUtil.createColumnFamily;
-import static com.hmsonline.storm.cassandra.bolt.AstyanaxUtil.newClusterContext;
-import static com.hmsonline.storm.cassandra.bolt.AstyanaxUtil.newContext;
-import static org.junit.Assert.assertEquals;
-
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-
-import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.thrift.transport.TTransportException;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import com.datastax.driver.core.DataType;
+import com.datastax.driver.core.ResultSet;
+import com.datastax.driver.core.Row;
+import com.datastax.driver.core.querybuilder.QueryBuilder;
+import com.datastax.driver.core.querybuilder.Select;
+import com.hmsonline.storm.cassandra.mapper.DefaultUpsertMapper;
+import com.hmsonline.storm.cassandra.testtools.TestBase;
+import org.apache.storm.task.TopologyContext;
+import org.apache.storm.topology.TopologyBuilder;
+import org.apache.storm.tuple.Fields;
+import org.apache.storm.tuple.Tuple;
+import org.apache.storm.tuple.TupleImpl;
+import org.apache.storm.tuple.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import backtype.storm.Config;
-import backtype.storm.task.TopologyContext;
-import backtype.storm.topology.TopologyBuilder;
-import backtype.storm.tuple.Fields;
-import backtype.storm.tuple.Tuple;
-import backtype.storm.tuple.TupleImpl;
-import backtype.storm.tuple.Values;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import com.hmsonline.storm.cassandra.StormCassandraConstants;
-import com.hmsonline.storm.cassandra.bolt.mapper.DefaultTupleMapper;
-import com.hmsonline.storm.cassandra.bolt.mapper.TupleMapper;
-import com.netflix.astyanax.AstyanaxContext;
-import com.netflix.astyanax.Cluster;
-import com.netflix.astyanax.Keyspace;
-import com.netflix.astyanax.model.Column;
-import com.netflix.astyanax.model.ColumnFamily;
-import com.netflix.astyanax.serializers.StringSerializer;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.runners.MockitoJUnitRunner;
 
-public class CassandraBoltTest {
-    private static Logger LOG = LoggerFactory.getLogger(CassandraBoltTest.class);
-    private static String KEYSPACE = CassandraBoltTest.class.getSimpleName().toLowerCase();
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.when;
 
+@RunWith(MockitoJUnitRunner.class)
+public class CassandraBoltTest extends TestBase {
+    private static Logger logger = LoggerFactory.getLogger(CassandraBoltTest.class);
 
-    @BeforeClass
-    public static void setupCassandra() throws TTransportException, IOException, InterruptedException,
-            ConfigurationException, Exception {
-        SingletonEmbeddedCassandra.getInstance();
-        try {
+    private ExecutorService executor = Executors.newCachedThreadPool();
 
-            AstyanaxContext<Cluster> clusterContext = newClusterContext("localhost:9160");
-            createColumnFamily(clusterContext, KEYSPACE, "users","UTF8Type", "UTF8Type", "UTF8Type");
-            createColumnFamily(clusterContext, KEYSPACE, "Counts", "UTF8Type", "UTF8Type", "CounterColumnType", true);
-
-        } catch (Exception e) {
-            LOG.warn("Couldn't setup cassandra.", e);
-            throw e;
-        }
-    }
-
+    @Mock
+    TopologyContext context;
 
     @Test
-    public void testBolt() throws Exception {
-        TupleMapper<String, String, String> tupleMapper = new DefaultTupleMapper(KEYSPACE, "users", "VALUE");
-        String configKey = "cassandra-config";
-        CassandraBatchingBolt<String, String, String> bolt = new CassandraBatchingBolt<String, String, String>(configKey, tupleMapper);
+    public void CassandraBolt_SingleValueTest() throws Exception {
+
+        String outputTable = "bolt_output";
+        String outputField = "value";
+        Fields fields = new Fields(outputField);
+
+        when(context.getComponentOutputFields(any(), any()))
+                .thenReturn(new Fields(outputField));
+        when(context.getSharedExecutor())
+                .thenReturn(executor);
+
+        logger.info("Creating cassandra table.");
+        createTable(KEYSPACE, outputTable, column(outputField, DataType.cint()));
+
+        logger.info("Preparing bolt.");
+        CassandraBolt bolt = new CassandraBolt()
+                .setTupleMapper(new DefaultUpsertMapper(KEYSPACE, outputTable, fields));
+
         TopologyBuilder builder = new TopologyBuilder();
         builder.setBolt("TEST_BOLT", bolt);
 
-        Fields fields = new Fields("VALUE");
-        TopologyContext context = new MockTopologyContext(builder.createTopology(), fields);
+        bolt.prepare(stormConfig, context, null);
 
-        Config config = new Config();
-        config.put(Config.TOPOLOGY_MAX_SPOUT_PENDING, 5000);
-        
-        Map<String, Object> clientConfig = new HashMap<String, Object>();
-        clientConfig.put(StormCassandraConstants.CASSANDRA_HOST, "localhost:9160");
-        clientConfig.put(StormCassandraConstants.CASSANDRA_KEYSPACE, Arrays.asList(new String [] {KEYSPACE}));
-        config.put(configKey, clientConfig);
-
-        bolt.prepare(config, context, null);
-        System.out.println("Bolt Preparation Complete.");
-
+        logger.info("Sending tuple.");
         Values values = new Values(42);
         Tuple tuple = new TupleImpl(context, values, 5, "test");
         bolt.execute(tuple);
 
-        // wait very briefly for the batch to complete
-        Thread.sleep(250);
+        Select select = QueryBuilder
+                .select()
+                .all()
+                .from(KEYSPACE, outputTable);
 
-        AstyanaxContext<Keyspace> astyContext = newContext("localhost:9160", KEYSPACE);
-        Keyspace ks = astyContext.getEntity();
+        ResultSet result;
+        do {
+            Thread.sleep(500);
+            logger.info("Querying for a value...");
+            result = session.execute(select);
+        }
+        while (!result.iterator().hasNext());
 
-        Column<String> result = ks
-                .prepareQuery(new ColumnFamily<String, String>("users", StringSerializer.get(), StringSerializer.get()))
-                .getKey("42").getColumn("VALUE").execute().getResult();
-        assertEquals("42", result.getStringValue());
+        int answer = result.one().getInt(outputField);
+        logger.info("The answer is clearly {}, now what was the question?", answer);
+        assertEquals(42, answer);
 
     }
 
     @Test
-    public void testCounterBolt() throws Exception {
-        String configKey = "cassandra-config";
-        CassandraCounterBatchingBolt<String, String,Long> bolt = new CassandraCounterBatchingBolt<String, String, Long>(KEYSPACE, configKey, "Counts", "Timestamp", "IncrementAmount");
+    public void CassandraBolt_MultiValueTest() throws Exception {
+
+        String outputTable = "bolt_output";
+        String[] outputFields = { "n1","n2","n3","n4","n5","n6" };
+        Fields fields = new Fields(outputFields);
+
+        when(context.getComponentOutputFields(any(), any()))
+                .thenReturn(new Fields(outputFields));
+        when(context.getSharedExecutor())
+                .thenReturn(executor);
+
+        logger.info("Creating cassandra table.");
+        createTable(KEYSPACE, outputTable,
+                column(outputFields[0], DataType.cint()),
+                column(outputFields[1], DataType.cint()),
+                column(outputFields[2], DataType.cint()),
+                column(outputFields[3], DataType.cint()),
+                column(outputFields[4], DataType.cint()),
+                column(outputFields[5], DataType.cint())
+        );
+
+        logger.info("Preparing bolt.");
+        CassandraBolt bolt = new CassandraBolt()
+                .setTupleMapper(new DefaultUpsertMapper(KEYSPACE, outputTable, fields));
+
         TopologyBuilder builder = new TopologyBuilder();
-        builder.setBolt("TEST__COUNTER_BOLT", bolt);
+        builder.setBolt("TEST_BOLT", bolt);
 
-        Fields fields = new Fields("Timestamp", "IncrementAmount", "CounterColumn");
-        TopologyContext context = new MockTopologyContext(builder.createTopology(), fields);
 
-        Config config = new Config();
-        config.put(Config.TOPOLOGY_MAX_SPOUT_PENDING, 5000);
-        
-        Map<String, Object> clientConfig = new HashMap<String, Object>();
-        clientConfig.put(StormCassandraConstants.CASSANDRA_HOST, "localhost:9160");
-        clientConfig.put(StormCassandraConstants.CASSANDRA_KEYSPACE, Arrays.asList(new String [] {KEYSPACE}));
-        config.put(configKey, clientConfig);
-        
+        bolt.prepare(stormConfig, context, null);
 
-        bolt.prepare(config, context, null);
-        System.out.println("Bolt Preparation Complete.");
-
-        Values values = new Values("1", 1L, "MyCountColumn");
+        logger.info("Sending tuple.");
+        Values values = new Values(4, 8, 15, 16, 23, 42);
         Tuple tuple = new TupleImpl(context, values, 5, "test");
         bolt.execute(tuple);
 
-        // wait very briefly for the batch to complete
-        Thread.sleep(250);
+        Select select = QueryBuilder
+                .select()
+                .all()
+                .from(KEYSPACE, outputTable);
 
-        AstyanaxContext<Keyspace> astyContext = newContext("localhost:9160", KEYSPACE);
-        Keyspace ks = astyContext.getEntity();
+        ResultSet result;
+        do {
+            Thread.sleep(500);
+            logger.info("Querying for a value...");
+            result = session.execute(select);
+        }
+        while (!result.iterator().hasNext());
 
-        Column<String> result = ks
-                .prepareQuery(
-                        new ColumnFamily<String, String>("Counts", StringSerializer.get(), StringSerializer.get()))
-                .getKey("1").getColumn("MyCountColumn").execute().getResult();
-        assertEquals(1L, result.getLongValue());
+        Row answer = result.one();
+        assertEquals(4, answer.getInt(0));
+        assertEquals(8, answer.getInt(1));
+        assertEquals(15, answer.getInt(2));
+        assertEquals(16, answer.getInt(3));
+        assertEquals(23, answer.getInt(4));
+        assertEquals(42, answer.getInt(5));
+
     }
+
 }

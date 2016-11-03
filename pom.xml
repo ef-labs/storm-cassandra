@@ -15,20 +15,21 @@
  See the License for the specific language governing permissions and
  limitations under the License.
 -->
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 
-	<parent>
-		<groupId>org.sonatype.oss</groupId>
-		<artifactId>oss-parent</artifactId>
-		<version>7</version>
-	</parent>
+    <parent>
+        <groupId>org.sonatype.oss</groupId>
+        <artifactId>oss-parent</artifactId>
+        <version>7</version>
+    </parent>
 
-	<modelVersion>4.0.0</modelVersion>
-	<groupId>com.hmsonline</groupId>
-	<artifactId>storm-cassandra</artifactId>
-	<version>0.4.0-rc5-SNAPSHOT</version>
-	<name>Storm Cassandra Support</name>
-	<description>Storm Cassandra Support</description>
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.hmsonline</groupId>
+    <artifactId>storm-cassandra</artifactId>
+    <version>0.5.0-SNAPSHOT</version>
+    <name>Storm Cassandra Support</name>
+    <description>Storm Cassandra Support</description>
 
     <licenses>
         <license>
@@ -36,94 +37,99 @@
             <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
         </license>
     </licenses>
-	<scm>
-		<connection>scm:git:git@github.com:hmsonline/storm-cassandra.git</connection>
-		<developerConnection>scm:git:git@github.com:hmsonline/storm-cassandra.git</developerConnection>
-		<url>:git@github.com:hmsonline/storm-cassandra.git</url>
-	</scm>
+    <scm>
+        <connection>scm:git:git@github.com:hmsonline/storm-cassandra.git</connection>
+        <developerConnection>scm:git:git@github.com:hmsonline/storm-cassandra.git</developerConnection>
+        <url>:git@github.com:hmsonline/storm-cassandra.git</url>
+    </scm>
 
-	<developers>
-		<developer>
-			<id>ptgoetz</id>
-			<name>P. Taylor Goetz</name>
-			<email>ptgoetz@gmail.com</email>
-		</developer>
-	</developers>
+    <developers>
+        <developer>
+            <id>ptgoetz</id>
+            <name>P. Taylor Goetz</name>
+            <email>ptgoetz@gmail.com</email>
+        </developer>
+    </developers>
 
-	<repositories>
-		<repository>
-			<id>clojars.org</id>
-			<url>http://clojars.org/repo</url>
-		</repository>
-	</repositories>
+    <repositories>
+        <repository>
+            <id>clojars.org</id>
+            <url>http://clojars.org/repo</url>
+        </repository>
+    </repositories>
 
-	<properties>
-		<storm.version>0.9.0.1</storm.version>
-		<astyanax.version>1.56.44</astyanax.version>
-	</properties>
+    <properties>
+        <storm.version>1.0.2</storm.version>
+        <cassandra.driver.version>3.1.2</cassandra.driver.version>
+        <!--<cassandra.unit.version>3.0.0.1</cassandra.unit.version>-->
+        <cassandra.unit.version>2.1.9.2</cassandra.unit.version>
+        <slf4j.version>1.6.4</slf4j.version>
+        <junit.version>4.12</junit.version>
+    </properties>
 
-	<dependencies>
-		<dependency>
-			<groupId>junit</groupId>
-			<artifactId>junit</artifactId>
-			<version>4.10</version>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.slf4j</groupId>
-			<artifactId>slf4j-log4j12</artifactId>
-			<version>1.6.4</version>
-		</dependency>
-		<dependency>
-			<groupId>org.slf4j</groupId>
-			<artifactId>slf4j-api</artifactId>
-			<version>1.6.4</version>
-		</dependency>
-		<dependency>
-			<groupId>storm</groupId>
-			<artifactId>storm</artifactId>
-			<version>${storm.version}</version>
-			<!-- keep storm out of the jar-with-dependencies -->
-			<scope>provided</scope>
-			<exclusions>
-				<exclusion>
-					<artifactId>slf4j-api</artifactId>
-					<groupId>org.slf4j</groupId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-		<dependency>
-			<groupId>com.netflix.astyanax</groupId>
-			<artifactId>astyanax</artifactId>
-			<version>${astyanax.version}</version>
-			<exclusions>
-				<exclusion>
-					<artifactId>commons-lang</artifactId>
-					<groupId>commons-lang</groupId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-		<dependency>
-			<groupId>org.mockito</groupId>
-			<artifactId>mockito-all</artifactId>
-			<version>1.9.5</version>
-			<scope>test</scope>
-		</dependency>
-	</dependencies>
-	<build>
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.storm</groupId>
+            <artifactId>storm-core</artifactId>
+            <version>${storm.version}</version>
+            <!-- keep storm out of the jar-with-dependencies -->
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <artifactId>slf4j-api</artifactId>
+                    <groupId>org.slf4j</groupId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>log4j-over-slf4j</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>com.datastax.cassandra</groupId>
+            <artifactId>cassandra-driver-core</artifactId>
+            <version>${cassandra.driver.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.datastax.cassandra</groupId>
+            <artifactId>cassandra-driver-mapping</artifactId>
+            <version>${cassandra.driver.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.cassandraunit</groupId>
+            <artifactId>cassandra-unit-shaded</artifactId>
+            <version>${cassandra.unit.version}</version>
+            <scope>test</scope>
+        </dependency>
 
-		<plugins>
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-compiler-plugin</artifactId>
-				<version>2.5.1</version>
-				<configuration>
-					<source>1.6</source>
-					<target>1.6</target>
-				</configuration>
-			</plugin>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-all</artifactId>
+            <version>1.9.5</version>
+            <scope>test</scope>
+        </dependency>
 
-		</plugins>
+    </dependencies>
+    <build>
 
-	</build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>2.5.1</version>
+                <configuration>
+                    <source>1.8</source>
+                    <target>1.8</target>
+                </configuration>
+            </plugin>
+
+        </plugins>
+
+    </build>
 </project>

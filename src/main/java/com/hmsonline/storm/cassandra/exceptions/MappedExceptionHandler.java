@@ -17,85 +17,151 @@
  */
 package com.hmsonline.storm.cassandra.exceptions;
 
-import backtype.storm.topology.FailedException;
+import com.datastax.driver.core.exceptions.OverloadedException;
+import org.apache.storm.task.IErrorReporter;
+import org.apache.storm.topology.FailedException;
 import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import storm.trident.operation.TridentCollector;
 
+import java.util.Arrays;
 import java.util.HashSet;
 
 public class MappedExceptionHandler implements ExceptionHandler {
+
     private static final long serialVersionUID = 1L;
-    private static final Logger LOG = LoggerFactory.getLogger(MappedExceptionHandler.class);
 
-
-    public static enum Action{
-        FAIL_TUPLE, REPORT_ERROR, KILL_WORKER, LOG
+    public enum Action{
+        DEFAULT,
+        LOG,
+        RETRY_TUPLE,
+        ABANDON_TUPLE,
+        KILL_WORKER
     }
 
-    private HashSet<Class<? extends Exception>> failTupleExceptions = new HashSet<Class<? extends Exception>>();
-    private HashSet<Class<? extends Exception>> reportErrorExceptions = new HashSet<Class<? extends Exception>>();
-    private HashSet<Class<? extends Exception>> killWorkerExceptions = new HashSet<Class<? extends Exception>>();
+    private HashSet<Class<? extends Exception>> retryTupleExceptions = new HashSet<>();
+    private HashSet<Class<? extends Exception>> abandonTupleExceptions = new HashSet<>();
+    private HashSet<Class<? extends Exception>> killWorkerExceptions = new HashSet<>();
 
     private Action defaultAction = Action.LOG;
 
+    public MappedExceptionHandler() {
+        setDefaults();
+    }
+
+    protected void setDefaults() {
+        dieOn(CriticalException.class);
+        abandonOn(UnrecoverableException.class);
+        retryOn(RecoverableException.class);
+        // Timeout on aquiring some lock, unlikely to be of real consequence.
+        retryOn(InterruptedException.class);
+        // Cassandra is overloaded, should be temporary
+        retryOn(OverloadedException.class);
+    }
+
+    @Override
+    @SuppressWarnings("Duplicates")
+    public void onException(Exception e, IErrorReporter collector, Logger logger) {
+        switch (actionFor(e)) {
+
+            case KILL_WORKER:
+                logger.warn("Killing worker/executor based on registered exception " + e.getClass().getName()
+                        + ", Message: '" + e.getMessage() + "'", e);
+                // wrap in RuntimeException in case FailedException has been
+                // explicitly registered.
+                throw new RuntimeException(e);
+
+            case ABANDON_TUPLE:
+                logger.info(
+                        "Reporting error based on registered exception " + e.getClass().getName() + ", Message: '"
+                                + e.getMessage() + "'", e);
+                if(collector != null){
+                    collector.reportError(e);
+                }
+                break;
+
+            case RETRY_TUPLE:
+                logger.info("Failing tuple based on registered exception " + e.getClass().getName() + ", Message: '"
+                        + e.getMessage() + "'", e);
+                throw new FailedException(e);
+
+            default:
+                logger.warn("Ignoring exception " + e.getClass().getName() + " and acknowledging batch. Message: '"
+                        + e.getMessage() + "'", e);
+                break;
+
+        }
+    }
+
     protected final void setDefaultAction(Action action){
-        this.defaultAction = action;
-    }
-
-    protected final void addFailOn(Class<? extends Exception>... exceptions) {
-        for (Class<? extends Exception> e : exceptions) {
-            if (reportErrorExceptions.contains(e) || killWorkerExceptions.contains(e)) {
-                throw new IllegalStateException("Exception " + e.getName() + " has already been registered.");
-            }
-            this.failTupleExceptions.add(e);
+        if (action == Action.DEFAULT) {
+            this.defaultAction = Action.LOG;
+        }
+        else {
+            this.defaultAction = action;
         }
     }
 
-    protected final void addReportOn(Class<? extends Exception>... exceptions) {
-        for (Class<? extends Exception> e : exceptions) {
-            if (failTupleExceptions.contains(e) || killWorkerExceptions.contains(e)) {
-                throw new IllegalStateException("Exception " + e.getName() + " has already been registered.");
-            }
-            this.reportErrorExceptions.add(e);
-        }
+    protected final void addRetryOn(Class<? extends Exception> e) {
+        abandonTupleExceptions.remove(e);
+        killWorkerExceptions.remove(e);
+        this.retryTupleExceptions.add(e);
     }
 
-    protected final void addDieOn(Class<? extends Exception>... exceptions) {
-        for (Class<? extends Exception> e : exceptions) {
-            if (failTupleExceptions.contains(e) || reportErrorExceptions.contains(e)) {
-                throw new IllegalStateException("Exception " + e.getName() + " has already been registered.");
-            }
-            this.killWorkerExceptions.add(e);
-        }
+    protected final void addAbandonOn(Class<? extends Exception> e) {
+        retryTupleExceptions.remove(e);
+        killWorkerExceptions.remove(e);
+        this.abandonTupleExceptions.add(e);
     }
 
-    protected final Action actionFor(Exception e){
-        Class<? extends Exception> c = (Class<? extends Exception>)e.getClass();
-        if(this.failTupleExceptions.contains(c)){
-            return Action.FAIL_TUPLE;
-        } else if(this.killWorkerExceptions.contains(c)){
+    protected final void addDieOn(Class<? extends Exception> e) {
+        retryTupleExceptions.remove(e);
+        abandonTupleExceptions.remove(e);
+        this.killWorkerExceptions.add(e);
+    }
+
+    public final Action actionFor(Exception e) {
+        Class<? extends Exception> c = e.getClass();
+
+        // First check explicit mappings
+        if (this.killWorkerExceptions.contains(c)) {
             return Action.KILL_WORKER;
-        } else if(this.reportErrorExceptions.contains(c)){
-            return Action.REPORT_ERROR;
-        } else{
-            return this.defaultAction;
+        } else if (this.abandonTupleExceptions.contains(c)) {
+            return Action.ABANDON_TUPLE;
+        } else if (this.retryTupleExceptions.contains(c)) {
+            return Action.RETRY_TUPLE;
         }
+
+        // Handle multiexceptions
+         if (e instanceof MultiException) {
+            MultiException me = (MultiException) e;
+            return me.getExceptions()
+                    .stream()
+                    .map(this::actionFor)
+                    .max((a1, a2) -> Integer.compare(a1.ordinal(), a2.ordinal()))
+                    .orElse(defaultAction);
+        }
+
+        // None of the above, so return default
+        return defaultAction;
     }
 
-
-    public MappedExceptionHandler failOn(Class<? extends Exception>... exceptions) {
-        addFailOn(exceptions);
+    @SafeVarargs
+    public final MappedExceptionHandler retryOn(Class<? extends Exception>... exceptions) {
+        Arrays.stream(exceptions)
+                .forEach(this::addRetryOn);
         return this;
     }
 
-    public MappedExceptionHandler dieOn(Class<? extends Exception>... exceptions) {
-        addDieOn(exceptions);
+    @SafeVarargs
+    public final MappedExceptionHandler dieOn(Class<? extends Exception>... exceptions) {
+        Arrays.stream(exceptions)
+                .forEach(this::addDieOn);
         return this;
     }
 
-    public MappedExceptionHandler reportOn(Class<? extends Exception>... exceptions) {
-        addReportOn(exceptions);
+    @SafeVarargs
+    public final MappedExceptionHandler abandonOn(Class<? extends Exception>... exceptions) {
+        Arrays.stream(exceptions)
+                .forEach(this::addAbandonOn);
         return this;
     }
 
@@ -104,32 +170,8 @@ public class MappedExceptionHandler implements ExceptionHandler {
         return this;
     }
 
-    @Override
-    public void onException(Exception e, TridentCollector collector) {
-        switch (actionFor(e)) {
-            case FAIL_TUPLE:
-                LOG.info("Failing batch based on registered exception " + e.getClass().getName() + ", Message: '"
-                        + e.getMessage() + "'", e);
-                throw new FailedException(e);
-            case REPORT_ERROR:
-                LOG.info(
-                        "Reporting error based on registered exception " + e.getClass().getName() + ", Message: '"
-                                + e.getMessage() + "'", e);
-                if(collector != null){
-                    collector.reportError(e);
-                }
-                break;
-            case KILL_WORKER:
-                LOG.warn("Killing worker/executor based on registered exception " + e.getClass().getName()
-                        + ", Message: '" + e.getMessage() + "'", e);
-                // wrap in RuntimeException in case FailedException has been
-                // explicitly registered.
-                throw new RuntimeException(e);
-            default:
-                LOG.warn("Inoring exception " + e.getClass().getName() + " and acknowledging batch. Message: '"
-                        + e.getMessage() + "'", e);
-                break;
-        }
+    public Action getDefaultAction() {
+        return defaultAction;
     }
 
 }

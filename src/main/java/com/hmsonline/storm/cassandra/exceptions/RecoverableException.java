@@ -17,23 +17,18 @@
  */
 package com.hmsonline.storm.cassandra.exceptions;
 
-import org.apache.storm.task.IErrorReporter;
-import org.slf4j.Logger;
+/**
+ * Exception indicating that a recoverable error has occurred when
+ * interacting with Cassandra, and Storm <i>should</i>
+ * replay a tuple.
+ *
+ *
+ */
+public class RecoverableException extends RuntimeException {
 
-import java.io.Serializable;
+    private static final long serialVersionUID = 7670698606144390443L;
 
-public interface ExceptionHandler extends Serializable {
-
-    /**
-     * Called when an exception is encountered.
-     *
-     * Note that the <code>errorReporter</code> parameter may be null if
-     * an exception occurs outside of a context where a TridentCollector
-     * is available.
-     *
-     * @param ex The error
-     * @param errorReporter The error reporter
-     * @param logger The logger to use
-     */
-    void onException(Exception ex, IErrorReporter errorReporter, Logger logger);
+    public RecoverableException(String message, Exception e) {
+        super(message, e);
+    }
 }

@@ -1,12 +1,12 @@
 Storm Cassandra Integration
 ===========================
 
-Integrates Storm and Cassandra by providing a generic and configurable `backtype.storm.Bolt` 
-implementation that writes Storm `Tuple` objects to a Cassandra Column Family.
+Integrates Storm and Cassandra by providing generic and configurable components that read  
+and write from Cassandra. 
 
 How the Storm `Tuple` data is written to Cassandra is dynamically configurable -- you
-provide classes that "determine" a column family, row key, and column name/values, and the 
-bolt will write the data to a Cassandra cluster.
+provide classes that "determine" a table, row key, and column name/values, and the 
+components will write the iteraction with Cassandra.
 
 ### Project Location
 Primary development of storm-cassandra will take place at: 
@@ -21,68 +21,81 @@ Maven artifacts for releases will be available on maven central.
 
 		$ mvn install
 
-### Usage
+### Cassandra Configuration
 
-**Basic Usage**
+All storm and trident components expect cassandra connection information to be included in the storm topology configuration. 
+ The configuration is normally parsed fro the storm configuration using the ```cassandra-config```. Typically, this should
+ contain at least the seed hosts and port. See the JsonClusterConfigurator for other settings.
+ 
+```
+{
+    "cassandra-config": {
+        "seeds": [ "cassandra1", "cassandra2" ],
+        "port": 9042
+    }
+}
+```
 
-`CassandraBolt`, `TridentCassandraLookupFunction`, and `TridentCassandraWriteFunction` expects that a Cassandra hostname, 
-port, and keyspace be set in the Storm topology configuration.  To allow for multiple instances of these in a topology
-and not require that they all connect to the same Cassandra instance the values are added to the Storm configuration
-using a key and a map.  The key to indicate which map to use is set in the constructor of these classes when instantiating
-them.
+You can also create the configuration in code:
+```
+    Map<String, Object> cassandraConfig = new HashMap<>();
+    cassandraConfig.put(CONFIG_SEEDS, new String[] { "cassandra1", "cassandra2" });
+    cassandraConfig.put(CONFIG_PORT, 9042);
+    Map<String, Object> stormConfig = new HashMap<>();
+    stormConfig.put(CASSANDRA_CONFIG_KEY, clusterConfig);
+```
 
-		Map<String, Object> cassandraConfig = new HashMap<String, Object>();
-		cassandraConfig.put(StormCassandraConstants.CASSANDRA_HOST, "localhost:9160");
-		cassandraConfig.put(StormCassandraConstants.CASSANDRA_KEYSPACE, "testKeyspace");
-		Config config = new Config();
-		config.put("CassandraLocal", cassandraConfig);
-		
-The `CassandraBolt` class provides a convenience constructor that takes a column family name, and row key field value as arguments:
+At runtime, the components will use the key name ("cassandra-config" by default) to cache Cassandra sessions for the whole worker
+ process (i.e. there will be one session per topology and worker node).
 
-		IRichBolt cassandraBolt = new CassandraBolt("columnFamily", "rowKey");
+If you need to work with multiple cassandra clusters, you can override the config key on the components.
 
-The above constructor will create a `CassandraBolt` that writes to the "`columnFamily`" column family, and will look for/use a field 
-named "`rowKey`" in the `backtype.storm.tuple.Tuple` objects it receives as the Cassandra row key.
+### Concrete Component Overview
 
-For each field in the `backtype.storm.Tuple` received, the `CassandraBolt` will write a column name/value pair.
+Storm:
 
-For example, given the constructor listed above, a tuple value of:
+* CassandraBolt; writes incoming tuples to Cassandra, using a UpsertMapper to map tuples to cassandra fields.
+* CassandraBatchingBolt; writes incoming tuples to Cassandra in batches on a separate thread loop.
+  Note that there is no performance benefit to using this over the CassandraBolt - they both use a similar parallelism
+  approach, except that the batching bolt additionally supports a max batch size that can be used to control batch sizes.
+  This component is less efficient than the CassandraBolt because it waits for each batch to be fully processed before 
+  continuing.
+* TransactionalCassandraBatchingBolt; collects incoming tuples and writes them when the transaction is finished.
+* CassandraLookupBolt; performs a query based on incoming tuple values and emits new columns into the stream. If multiple records
+  are returned from Cassandra, one tuple is emitted for each record.
 
-		{rowKey: 12345, field1: "foo", field2: "bar}
+Trident:
 
-Would yield the following Cassandra row (as seen from `cassandra-cli`):
+* CassandraBackingMap; a backing map implementation for Cassandra.
+* CassandraMapStateFactory; a state factory that provides a MapState with a CassandraBackingMap, with optional caching.
+* CassandraLookupFunction; performs a query based on incoming tuple values and emits new columns into the stream. If multiple records
+  are returned from Cassandra, one tuple is emitted for each record. 
 
-		RowKey: 12345
-		=> (column=field1, value=foo, timestamp=1321938505071001)
-		=> (column=field2, value=bar, timestamp=1321938505072000)
-		
-**Cassandra Write Function**
-Storm Trident filters out the original Tuple if a function doesn't emit anything.  To allow for additional processing after
-writing to Cassandra the `TridentCassandraWriteFunction` can emit a static Object value.  The main purpose for this emit is
-to simply allow the Tuple to continue as opposed to filtering it out.  The static value can be set in either the constructor
-or by calling the setValueToEmitAfterWrite method.  Setting the emit value to NULL will cause the function to not emit anything
-and Storm will filter the Tuple out.  Default behavior is to not emit.
-If the function will emit a value don't forget to declare the output field when building the topology.
-		
-**Cassandra Counter Columns**
+### Parallelism
 
-The Counter Column concept is similar to the above,
-however you must specify the rowKey and a value to specify the increment amount. All other fields will be assumed to specify columns to be incremented by said amount. 
+Most components perform cassandra operations in asynchronously in parallel. 
 
-		CassandraCounterBatchingBolt logPersistenceBolt = new CassandraCounterBatchingBolt(
-				"columnFamily", "RowKeyField", "IncrementAmountField" );
-				
-The above constructor will create a bolt that writes to the "`columnFamily`" column family, and will use a field named "`RowKeyField`"
-in the tuples that it receives. All remaining fields in the Tuple will be assumed to contain the names of the columns to be incremented.
+* The storm components (CassandraBolt, TransactionalCassandraBatchingBolt, CassandraLookupBolt) will all start their
+  cassandra operations and exit the execute() method. The ack (if applicable) is done once the operation is completed on
+  the shared executor thread.
+* The CassandraBatchingBolt and CassandraBackingMap will execute all statements asynchronously, in parallel, and wait for 
+  them to finish. While they wait for processing to finish before starting the next batch there is no limit on the number of 
+  parallel operations within the batch.
 
-Given the following Tuple:
+Given this setup, there is a risk of flooding Cassandra with a lot of traffic. There are two mechanisms that can be used to
+mitigate this.
 
-		{rowKey: 12345, IncrementAmount: 1L, IncrementColumn: 'SomeCounter'}
-		
-Would increment the "`SomeCounter`" counter column by 1L.
+* Edit the value of topology.max.spout.pending in the storm.yaml configuration file to limit the number of unacked tuples in 
+  the topology, and use ACK_ON_WRITE (for the storm components). 
+  The default is no limit. Hortonworks recommends that topologies using the core-storm API start with a value of 1000 and 
+  slowly decrease the value as necessary. Toplogies using the Trident API should start with a much lower value, between 1 and 5.
+* For controlling trident topologies more detailed than the number of in-flight batches, the CassandraStateFactory implements
+  throttling with the setMaxParallelism() method.
 
+In case Cassandra does get overloaded, the datastax driver throws an OverloadedException, which handled as a retryable error. 
 
 # Examples
+
 The "examples" directory contains two examples:
 
 * CassandraReachTopology
@@ -94,14 +107,16 @@ The "examples" directory contains two examples:
 The [`CassandraReachTopology`](https://github.com/hmsonline/storm-cassandra/blob/master/examples/src/main/java/com/hmsonline/storm/cassandra/example/CassandraReachTopology.java) 
 example is a Storm [Distributed RPC](https://github.com/nathanmarz/storm/wiki/Distributed-RPC) example 
 that is essentially a clone of Nathan Marz' [`ReachTopology`](https://github.com/nathanmarz/storm-starter/blob/master/src/jvm/storm/starter/ReachTopology.java), 
-that instead of using in-memory data stores  is backed by a [Cassandra](http://cassandra.apache.org/) database and uses generic 
-*storm-cassandra* bolts to query the database.
+that instead of using in-memory data stores is backed by a [Cassandra](http://cassandra.apache.org/) database and uses generic 
+*storm-cassandra* trident lookup functions to query the database.
 
 ## Persistent Word Count  
 The sample [`PersistentWordCount`](https://github.com/hmsonline/storm-cassandra/blob/master/examples/src/main/java/com/hmsonline/storm/cassandra/example/PersistentWordCount.java) 
 topology illustrates the basic usage of the Cassandra Bolt implementation. It reuses the [`TestWordSpout`](https://github.com/nathanmarz/storm/blob/master/src/jvm/backtype/storm/testing/TestWordSpout.java) 
 spout and [`TestWordCounter`](https://github.com/nathanmarz/storm/blob/master/src/jvm/backtype/storm/testing/TestWordCounter.java) 
-bolt from the Storm tutorial, and adds an instance of `CassandraBolt` to persist the results.
+bolt from the Storm tutorial, and adds an instance of `AbstractCassandraBolt` to persist the results.
+
+## Running the Samples
 
 
 ## Preparation
@@ -137,7 +152,6 @@ To enable logging of all tuples sent within the topology, run the following comm
 
 		$ mvn exec:java -Dexec.mainClass=com.hmsonline.storm.cassandra.example.CassandraReachTopology -Ddebug=true
 
-
 ## Running the Persistent Word Count Example
 
 The `PersistentWordCount` example build the following topology:
@@ -149,7 +163,7 @@ The `PersistentWordCount` example build the following topology:
 1. `TestWordSpout` emits words at random from a pre-defined list.
 2. `TestWordCounter` receives a word, updates a counter for that word,
 and emits a tuple containing the word and corresponding count ("word", "count").
-3. The `CassandraBolt` receives the ("word", "count") tuple and writes it to the
+3. The `AbstractCassandraBolt` receives the ("word", "count") tuple and writes it to the
 Cassandra database using the word as the row key.
 
 
